@@ -38,4 +38,4 @@
 ## 🚀 Запуск
 
 ```bash
-python3 dublicate_remove.py
+python3 dublicate_remover.py
