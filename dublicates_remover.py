@@ -182,32 +182,43 @@ class IMAPDuplicateRemover:
             if status == 'OK':
                 for folder_info in folder_list:
                     try:
-                        # Декодируем ответ
-                        folder_line = folder_info.decode('ascii')
+                        # Декодируем ответ в ASCII (имена папок в UTF-7)
+                        folder_line = folder_info.decode('ascii', errors='ignore')
                         
                         # Парсинг формата IMAP LIST response
-                        # Формат: (\Flags) "delimiter" "folder_name"
-                        pattern = r'\([^\)]*\)\s+"([^"]*)"\s+(.+)$'
-                        match = re.search(pattern, folder_line)
+                        # Формат: (\Flags) "delimiter" "folder_name" или (\Flags) "delimiter" folder_name
                         
-                        if match:
-                            delimiter = match.group(1)
-                            folder_name = match.group(2).strip('"').strip()
-                            
-                            # Пропускаем точки (служебные записи)
-                            if folder_name == '.' or not folder_name:
-                                continue
-                            
-                            # Декодируем имя папки из модифицированного UTF-7
-                            decoded_name = self.decode_folder_name(folder_name)
-                            
-                            # Пропускаем системные папки если нужно
-                            if skip_system and self.should_skip_folder(decoded_name):
-                                print(f"  ⏭️  Пропускаю: {decoded_name}")
-                                continue
-                            
-                            # Сохраняем оригинальное имя для использования в IMAP командах
-                            folders.append(folder_name)
+                        # Ищем имя папки после разделителя
+                        # Формат может быть: (\HasNoChildren) "/" "INBOX" или (\HasNoChildren) "/" INBOX
+                        parts = folder_line.split('"')
+                        
+                        if len(parts) >= 3:
+                            # Формат с кавычками: (\Flags) "/" "folder_name"
+                            folder_name = parts[-1] if len(parts) == 3 else parts[2]
+                            # Убираем закрывающую кавычку если есть
+                            if folder_name.endswith('"'):
+                                folder_name = folder_name[:-1]
+                        else:
+                            # Формат без кавычек вокруг имени папки
+                            # Берём всё после последнего пробела
+                            folder_name = folder_line.split()[-1]
+                        
+                        folder_name = folder_name.strip()
+                        
+                        # Пропускаем точки (служебные записи)
+                        if folder_name == '.' or not folder_name:
+                            continue
+                        
+                        # Декодируем имя папки из модифицированного UTF-7 для проверки
+                        decoded_name = self.decode_folder_name(folder_name)
+                        
+                        # Пропускаем системные папки если нужно
+                        if skip_system and self.should_skip_folder(decoded_name):
+                            print(f"  ⏭️  Пропускаю: {decoded_name}")
+                            continue
+                        
+                        # Сохраняем ОРИГИНАЛЬНОЕ имя папки как оно пришло от сервера
+                        folders.append(folder_name)
                     except Exception as e:
                         # Пропускаем проблемные папки
                         continue
@@ -280,20 +291,17 @@ class IMAPDuplicateRemover:
             # Декодируем имя для отображения
             display_name = self.decode_folder_name(folder_name)
             
-            # Выбираем папку - используем оригинальное имя
-            status = None
+            # Выбираем папку - используем ОРИГИНАЛЬНОЕ закодированное имя без декодирования
+            status = 'NO'
+            
+            # IMAP требует точное имя папки как оно пришло от сервера
             try:
-                # Вариант 1: прямое имя
-                status, messages = mail.select(folder_name)
-            except:
-                try:
-                    # Вариант 2: в кавычках
-                    status, messages = mail.select(f'"{folder_name}"')
-                except:
-                    pass
+                status, messages = mail.select(folder_name, readonly=False)
+            except Exception as e:
+                pass
             
             if status != 'OK':
-                print(f"❌ Не удалось открыть папку: {display_name}")
+                print(f"❌ Не удалось открыть папку: {display_name} (имя: {folder_name})")
                 return folder_stats
             
             # Получаем все ID писем
@@ -502,7 +510,7 @@ def get_imap_settings():
     print("   Yandex:    imap.yandex.ru")
     print("   Mail.ru:   imap.mail.ru")
     print("   Outlook:   outlook.office365.com")
-    print("   Timeweb:   imap.timeweb.ru")
+    print("   Timeweb:   imap.timeweb.ru или mail.timeweb.ru")
     print("   Beget:     imap.beget.com")
     
     host = input("\n🌐 IMAP сервер: ").strip()
