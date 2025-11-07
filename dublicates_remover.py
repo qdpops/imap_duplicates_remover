@@ -59,57 +59,39 @@ class IMAPDuplicateRemover:
     def connect(self) -> imaplib.IMAP4_SSL:
         """Создаёт подключение к IMAP серверу"""
         try:
-            print(f"   🔌 Подключение к {self.host}:{self.port}...")
-            
             if self.use_ssl:
                 mail = imaplib.IMAP4_SSL(self.host, self.port)
             else:
                 mail = imaplib.IMAP4(self.host, self.port)
             
-            print(f"   🔐 Авторизация пользователя {self.username}...")
             mail.login(self.username, self.password)
-            print(f"   ✅ Авторизация успешна!")
-            
             return mail
         except Exception as e:
             print(f"❌ Ошибка подключения: {e}")
-            print(f"💡 Проверьте:")
-            print(f"   - IMAP сервер: {self.host}")
-            print(f"   - Порт: {self.port}")
-            print(f"   - Логин: {self.username}")
-            print(f"   - Пароль (не отображается)")
             raise
     
     def decode_folder_name(self, folder_name: str) -> str:
         """Декодирует имя папки из модифицированного UTF-7 (IMAP)"""
         try:
-            # Если строка содержит &, это закодированное имя
             if '&' in folder_name:
                 decoded = ''
                 i = 0
                 while i < len(folder_name):
                     if folder_name[i] == '&':
-                        # Найти конец закодированной последовательности
                         end = folder_name.find('-', i)
                         if end == -1:
                             end = len(folder_name)
                         
                         if end == i + 1:
-                            # &- означает просто &
                             decoded += '&'
                             i = end + 1
                         else:
-                            # Декодируем последовательность
                             encoded_part = folder_name[i+1:end]
                             try:
-                                # Заменяем , на / для base64 и декодируем
                                 encoded_part = encoded_part.replace(',', '/')
-                                # Добавляем padding если нужно
                                 padding = (4 - len(encoded_part) % 4) % 4
                                 encoded_part += '=' * padding
-                                # Декодируем из base64
                                 decoded_bytes = base64.b64decode(encoded_part)
-                                # Декодируем из UTF-16BE
                                 decoded += decoded_bytes.decode('utf-16-be')
                             except:
                                 decoded += folder_name[i:end+1]
@@ -123,41 +105,6 @@ class IMAPDuplicateRemover:
         except Exception as e:
             return folder_name
     
-    def encode_folder_name(self, folder_name: str) -> str:
-        """Кодирует имя папки для IMAP в модифицированный UTF-7"""
-        try:
-            # Если содержит не-ASCII символы, кодируем
-            if any(ord(c) > 127 for c in folder_name):
-                encoded = ''
-                i = 0
-                while i < len(folder_name):
-                    if ord(folder_name[i]) > 127:
-                        # Найти последовательность не-ASCII символов
-                        j = i
-                        while j < len(folder_name) and ord(folder_name[j]) > 127:
-                            j += 1
-                        
-                        # Кодируем в UTF-16BE
-                        utf16_bytes = folder_name[i:j].encode('utf-16-be')
-                        # Кодируем в base64
-                        b64 = base64.b64encode(utf16_bytes).decode('ascii')
-                        # Убираем padding и заменяем / на ,
-                        b64 = b64.rstrip('=').replace('/', ',')
-                        # Добавляем с & и -
-                        encoded += '&' + b64 + '-'
-                        i = j
-                    else:
-                        if folder_name[i] == '&':
-                            encoded += '&-'
-                        else:
-                            encoded += folder_name[i]
-                        i += 1
-                return encoded
-            else:
-                return folder_name.replace('&', '&-')
-        except:
-            return folder_name
-    
     def should_skip_folder(self, folder_name: str) -> bool:
         """Проверяет, нужно ли пропустить папку"""
         folder_lower = folder_name.lower()
@@ -169,58 +116,50 @@ class IMAPDuplicateRemover:
         return False
     
     def get_folders(self, mail: imaplib.IMAP4_SSL, skip_system: bool = True) -> List[str]:
-        """
-        Получает список всех папок
-        
-        Args:
-            mail: IMAP соединение
-            skip_system: Пропускать системные папки (корзина, спам и т.д.)
-        """
+        """Получает список всех папок"""
         folders = []
         try:
             status, folder_list = mail.list()
             if status == 'OK':
                 for folder_info in folder_list:
                     try:
-                        # Декодируем ответ в ASCII (имена папок в UTF-7)
                         folder_line = folder_info.decode('ascii', errors='ignore')
                         
-                        # Парсинг формата IMAP LIST response
-                        # Формат: (\Flags) "delimiter" "folder_name" или (\Flags) "delimiter" folder_name
+                        # DEBUG: показываем что парсим (первые 3 папки)
+                        if len(folders) < 3:
+                            print(f"  DEBUG RAW: {folder_line}")
                         
-                        # Ищем имя папки после разделителя
-                        # Формат может быть: (\HasNoChildren) "/" "INBOX" или (\HasNoChildren) "/" INBOX
-                        parts = folder_line.split('"')
+                        # Regex для парсинга: (\Flags) "delimiter" "folder_name"
+                        pattern1 = r'\([^\)]*\)\s+"([^"]*)"\s+"([^"]*)"'
+                        match = re.search(pattern1, folder_line)
                         
-                        if len(parts) >= 3:
-                            # Формат с кавычками: (\Flags) "/" "folder_name"
-                            folder_name = parts[-1] if len(parts) == 3 else parts[2]
-                            # Убираем закрывающую кавычку если есть
-                            if folder_name.endswith('"'):
-                                folder_name = folder_name[:-1]
+                        if match:
+                            delimiter = match.group(1)
+                            folder_name = match.group(2)
+                            if len(folders) < 3:
+                                print(f"  DEBUG PARSED: delimiter='{delimiter}', folder='{folder_name}'")
                         else:
-                            # Формат без кавычек вокруг имени папки
-                            # Берём всё после последнего пробела
-                            folder_name = folder_line.split()[-1]
+                            # Альтернативный формат без кавычек
+                            pattern2 = r'\([^\)]*\)\s+"([^"]*)"\s+(\S+)'
+                            match = re.search(pattern2, folder_line)
+                            if match:
+                                delimiter = match.group(1)
+                                folder_name = match.group(2).strip()
+                            else:
+                                continue
                         
-                        folder_name = folder_name.strip()
-                        
-                        # Пропускаем точки (служебные записи)
-                        if folder_name == '.' or not folder_name:
+                        if not folder_name or folder_name == '.':
                             continue
                         
-                        # Декодируем имя папки из модифицированного UTF-7 для проверки
                         decoded_name = self.decode_folder_name(folder_name)
                         
-                        # Пропускаем системные папки если нужно
                         if skip_system and self.should_skip_folder(decoded_name):
                             print(f"  ⏭️  Пропускаю: {decoded_name}")
                             continue
                         
-                        # Сохраняем ОРИГИНАЛЬНОЕ имя папки как оно пришло от сервера
                         folders.append(folder_name)
+                        
                     except Exception as e:
-                        # Пропускаем проблемные папки
                         continue
                         
         except Exception as e:
@@ -252,30 +191,17 @@ class IMAPDuplicateRemover:
         return ''.join(decoded_parts)
     
     def get_message_hash(self, msg: Message) -> str:
-        """
-        Создаёт хеш письма на основе:
-        - От кого (From)
-        - Тема (Subject)
-        - Дата (Date)
-        - Message-ID (если есть)
-        """
+        """Создаёт хеш письма"""
         from_header = self.decode_header_value(msg.get('From', ''))
         subject = self.decode_header_value(msg.get('Subject', ''))
         date = msg.get('Date', '')
         message_id = msg.get('Message-ID', '')
         
-        # Создаём уникальный идентификатор
         unique_str = f"{from_header}|{subject}|{date}|{message_id}"
         return hashlib.md5(unique_str.encode('utf-8')).hexdigest()
     
     def process_folder(self, folder_name: str, dry_run: bool = False) -> Dict:
-        """
-        Обрабатывает одну папку и находит дубликаты
-        
-        Args:
-            folder_name: Имя папки (в формате IMAP UTF-7)
-            dry_run: Если True, только показывает дубликаты без удаления
-        """
+        """Обрабатывает одну папку и находит дубликаты"""
         mail = None
         folder_stats = {
             'folder': folder_name,
@@ -287,24 +213,26 @@ class IMAPDuplicateRemover:
         
         try:
             mail = self.connect()
-            
-            # Декодируем имя для отображения
             display_name = self.decode_folder_name(folder_name)
             
-            # Выбираем папку - используем ОРИГИНАЛЬНОЕ закодированное имя без декодирования
+            # Выбираем папку используя оригинальное имя В КАВЫЧКАХ
             status = 'NO'
             
-            # IMAP требует точное имя папки как оно пришло от сервера
             try:
-                status, messages = mail.select(folder_name, readonly=False)
+                # IMAP требует имя папки в кавычках если есть пробелы или спецсимволы
+                status, messages = mail.select('"{}"'.format(folder_name), readonly=False)
             except Exception as e:
-                pass
+                # Если не получилось с кавычками, пробуем без
+                try:
+                    status, messages = mail.select(folder_name, readonly=False)
+                except:
+                    pass
             
             if status != 'OK':
-                print(f"❌ Не удалось открыть папку: {display_name} (имя: {folder_name})")
+                print(f"❌ Не удалось открыть папку: {display_name}")
+                print(f"   DEBUG: Имя для IMAP: {folder_name}")
                 return folder_stats
             
-            # Получаем все ID писем
             status, msg_nums = mail.search(None, 'ALL')
             if status != 'OK':
                 return folder_stats
@@ -319,10 +247,8 @@ class IMAPDuplicateRemover:
                 print(f"   ℹ️  Папка пустая, пропускаем")
                 return folder_stats
             
-            # Словарь: хеш -> список ID писем
             hash_to_ids = defaultdict(list)
             
-            # Обрабатываем письма с прогресс-баром
             processed = 0
             for msg_id in message_ids:
                 try:
@@ -342,12 +268,10 @@ class IMAPDuplicateRemover:
                     
                 except Exception as e:
                     folder_stats['errors'] += 1
-                    # Не выводим каждую ошибку, чтобы не замусоривать вывод
             
             if processed > 0:
                 print(f"   📊 Обработано: {processed}/{len(message_ids)}")
             
-            # Находим дубликаты
             duplicates_count = 0
             deleted_count = 0
             
@@ -355,19 +279,14 @@ class IMAPDuplicateRemover:
                 if len(ids) > 1:
                     duplicates_count += len(ids) - 1
                     
-                    # Оставляем первое письмо, удаляем остальные
                     for duplicate_id in ids[1:]:
-                        if dry_run:
-                            # В режиме проверки только считаем
-                            pass
-                        else:
+                        if not dry_run:
                             try:
                                 mail.store(duplicate_id, '+FLAGS', '\\Deleted')
                                 deleted_count += 1
                             except Exception as e:
                                 folder_stats['errors'] += 1
             
-            # Применяем удаление
             if not dry_run and deleted_count > 0:
                 mail.expunge()
             
@@ -414,21 +333,13 @@ class IMAPDuplicateRemover:
             queue.task_done()
     
     def remove_duplicates(self, folders: List[str] = None, dry_run: bool = False, skip_system: bool = True):
-        """
-        Удаляет дубликаты из указанных папок (многопоточно)
-        
-        Args:
-            folders: Список папок (None = все папки)
-            dry_run: Если True, только показывает дубликаты без удаления
-            skip_system: Пропускать системные папки
-        """
+        """Удаляет дубликаты из указанных папок"""
         mode_text = "ПРОВЕРКА" if dry_run else "УДАЛЕНИЕ"
         
         print("\n" + "=" * 70)
         print(f"🔍 IMAP Поиск дубликатов писем - Режим: {mode_text}")
         print("=" * 70)
         
-        # Получаем список папок
         print("\n📂 Подключение к серверу...")
         mail = self.connect()
         print("✅ Подключено успешно!")
@@ -448,33 +359,27 @@ class IMAPDuplicateRemover:
             display_name = self.decode_folder_name(folder)
             print(f"   {i}. {display_name}")
         
-        # Создаём очередь и потоки
         queue = Queue()
         results = []
         threads = []
         
         print(f"\n🚀 Запуск обработки ({self.num_threads} потоков)...")
         
-        # Запускаем потоки
         for i in range(min(self.num_threads, len(folders))):
             t = threading.Thread(target=self.worker, args=(queue, results, dry_run))
             t.start()
             threads.append(t)
         
-        # Добавляем папки в очередь
         for folder in folders:
             queue.put(folder)
         
-        # Ждём завершения
         queue.join()
         
-        # Останавливаем потоки
         for i in range(len(threads)):
             queue.put(None)
         for t in threads:
             t.join()
         
-        # Выводим итоги
         print("\n" + "=" * 70)
         print("📊 ИТОГОВАЯ СТАТИСТИКА")
         print("=" * 70)
@@ -510,7 +415,7 @@ def get_imap_settings():
     print("   Yandex:    imap.yandex.ru")
     print("   Mail.ru:   imap.mail.ru")
     print("   Outlook:   outlook.office365.com")
-    print("   Timeweb:   imap.timeweb.ru")
+    print("   Timeweb:   imap.timeweb.ru или mail.timeweb.ru")
     print("   Beget:     imap.beget.com")
     
     host = input("\n🌐 IMAP сервер: ").strip()
@@ -550,7 +455,6 @@ def main():
         choice = input("Выберите действие [1-4]: ").strip()
         
         if choice == '1':
-            # Режим проверки
             print("\n🔍 Запуск проверки на дубликаты...")
             try:
                 remover = IMAPDuplicateRemover(
@@ -569,7 +473,6 @@ def main():
                 print("💡 Проверьте настройки подключения")
         
         elif choice == '2':
-            # Режим удаления
             print("\n⚠️  ВНИМАНИЕ! Будут удалены найденные дубликаты!")
             confirm = input("Продолжить? (yes/no): ").strip().lower()
             
@@ -594,12 +497,10 @@ def main():
                 print("\n❌ Операция отменена")
         
         elif choice == '3':
-            # Изменить настройки
             settings = get_imap_settings()
             print("\n✅ Настройки обновлены!")
         
         elif choice == '4':
-            # Выход
             print("\n👋 До свидания!")
             sys.exit(0)
         
