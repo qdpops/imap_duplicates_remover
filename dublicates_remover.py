@@ -510,7 +510,7 @@ def get_imap_settings():
     print("   Yandex:    imap.yandex.ru")
     print("   Mail.ru:   imap.mail.ru")
     print("   Outlook:   outlook.office365.com")
-    print("   Timeweb:   imap.timeweb.ru или mail.timeweb.ru")
+    print("   Timeweb:   imap.timeweb.ru")
     print("   Beget:     imap.beget.com")
     
     host = input("\n🌐 IMAP сервер: ").strip()
